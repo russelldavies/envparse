@@ -17,15 +17,12 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
-
 import os
-import types
 import unittest
 import warnings
 
 
 NOTSET = object()
-
 
 def env(var, cast=None, default=NOTSET):
     """Return value for given environment variable.
@@ -39,8 +36,7 @@ def env(var, cast=None, default=NOTSET):
         value = os.environ[var]
     except KeyError:
         if default is NOTSET:
-            raise
-
+            raise ValueError('The env variable %s is not set.', var)
         value = default
 
     # Resolve any proxied values
@@ -54,17 +50,20 @@ def env(var, cast=None, default=NOTSET):
             value = env(value, cast=cast, default=default)
         if value.startswith('{') and value.endswith('}'):
             # New-style: Always works
-            value = value.lstrip('{').rstrip('}')
-            value = env(value, cast=cast, default=default)
+            value = env(value.strip('{}'), cast=cast, default=default)
 
     # Don't cast if we're returning a default value
-    if value != default:
+    if value != default and cast is not None:
         if cast is bool:
-            value = int(value) != 0
-        elif isinstance(cast, list):
-            value = map(cast[0], [x for x in value.split(',') if x])
-        elif cast:
-            value = cast(value)
+            value = value in ['true', '1', 't', 'y', 'yes']
+        if type(cast) is type and (
+                issubclass(cast, list) or issubclass(cast, tuple)):
+            value = [x for x in value.split(',') if x]
+        elif isinstance(cast, (list, tuple)):
+            # Format is `(type, subtype)`
+            cast, subtype = cast
+            value = [subtype(x) for x in value.split(',') if x]
+        value = cast(value)
 
     return value
 
@@ -134,7 +133,7 @@ class EnvTests(unittest.TestCase):
         self.assertEqual(3, env('not_present', default=3))
 
     def test_not_present_without_default(self):
-        with self.assertRaises(KeyError):
+        with self.assertRaises(ValueError):
             env('not_present')
 
     def test_str(self):
@@ -144,15 +143,11 @@ class EnvTests(unittest.TestCase):
         self.assertTypeAndValue(int, 42, env('INT_VAR', cast=int))
 
     def test_int_with_none_default(self):
-        self.assertTypeAndValue(types.NoneType, None,
-                                env('NOT_PRESENT_VAR', cast=int, default=None))
+        self.assertTypeAndValue(type(None), None,
+                env('NOT_PRESENT_VAR', cast=int, default=None))
 
     def test_float(self):
         self.assertTypeAndValue(float, 33.3, env('FLOAT_VAR', cast=float))
-
-    def test_unicode(self):
-        self.assertTypeAndValue(unicode, u'ubar', env('UNICODE_VAR',
-                                cast=unicode))
 
     def test_bool_true(self):
         self.assertTypeAndValue(bool, True, env('BOOL_TRUE_VAR', cast=bool))
@@ -167,18 +162,21 @@ class EnvTests(unittest.TestCase):
         self.assertTypeAndValue(str, 'bar', env('NEW_STYLE_PROXIED_VAR'))
 
     def test_int_list(self):
-        self.assertTypeAndValue(list, [42, 33], env('INT_LIST', cast=[int]))
+        self.assertTypeAndValue(list, [42, 33],
+                env('INT_LIST', cast=(list, int)))
 
     def test_str_list_with_spaces(self):
         self.assertTypeAndValue(list, [' foo', '  bar'],
-                                env('STR_LIST_WITH_SPACES', cast=[str]))
+                env('STR_LIST_WITH_SPACES', cast=[list, str]))
 
     def test_empty_list(self):
-        self.assertTypeAndValue(list, [], env('EMPTY_LIST', cast=[int]))
+        self.assertTypeAndValue(list, [],
+                env('EMPTY_LIST', cast=[list, int]))
 
     def test_schema(self):
         env = Env(INT_VAR=int, NOT_PRESENT_VAR=(float, 33.3), STR_VAR=str,
-                  INT_LIST=[int], DEFAULT_LIST=([int], [2]))
+                  INT_LIST=([list, int], None),
+                  DEFAULT_LIST=([list, int], [2]))
 
         self.assertTypeAndValue(int, 42, env('INT_VAR'))
         self.assertTypeAndValue(float, 33.3, env('NOT_PRESENT_VAR'))
